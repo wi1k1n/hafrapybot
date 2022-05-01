@@ -1,8 +1,11 @@
 import subprocess, os, signal, requests, socket, urllib.parse
+import time
+
 from config_options import *
 from util.os_utils import *
 
 g_Process: subprocess.Popen = None
+g_alreadyRunning: bool = False
 
 def _requestNgrokTunnels(ngrokKey: str) -> object:
     url = 'https://api.ngrok.com/tunnels'
@@ -44,39 +47,48 @@ def GetNgrokLink(ngrokKey: str) -> str:
     return addr
     # return addr + ' (' + socket.gethostbyname(parsed_url.netloc) + ')'
 
-def RunAdditionalCommand(cmd: ConfigOptionType, link: str):
+def RunCommand(cmd: str) -> bool:
     try:
-        subprocess.run(repr(cmd).format(link), shell=True)
+        subprocess.run(cmd, shell=True)
     except:
         return False
     return True
 
-def RunNgrok(cmdList, timeout):
-    global g_Process
+def RunNgrok(cmdList: list[str], ngrokKey: str) -> bool:
+    global g_Process, g_alreadyRunning
 
-    # TODO: if windows/linux
+    if g_alreadyRunning:
+        if not StopNgrok(ngrokKey):
+            return False
     try:
-        if Windows():
-            g_Process = subprocess.Popen(cmdList, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False)
-        elif Linux():
-            g_Process = subprocess.Popen(cmdList, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False, preexec_fn=os.setsid)
+        g_Process = subprocess.Popen(cmdList, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False, preexec_fn=os.setsid if Linux() else None)
+        g_alreadyRunning = True
     except:
-        return False
+        g_alreadyRunning = False
 
-    return True
+    return g_alreadyRunning
 
-def StopNgrok(ngrokKey: str):
-    global g_Process
+def StopNgrok(ngrokKey: str) -> bool:
+    global g_Process, g_alreadyRunning
 
     if not g_Process:
+        g_alreadyRunning = False
         return True
 
     try:
         g_Process.send_signal(signal.SIGTERM)
+    except:
+        return False
+
+    # Just to double check
+    try:
+        time.sleep(0.1)
         os.killpg(os.getpgid(g_Process.pid), signal.SIGTERM)
     except:
         pass
 
     # TODO: check with searching for pid
 
-    return IsNgrokTunnelsEmpty(ngrokKey)
+    responseAPI = IsNgrokTunnelsEmpty(ngrokKey)
+    g_alreadyRunning = True if responseAPI is None else not responseAPI
+    return not g_alreadyRunning
