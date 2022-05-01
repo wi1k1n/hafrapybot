@@ -3,7 +3,6 @@
 
 import logging, configparser
 from enum import Enum
-from typing import Dict
 
 from telegram import ReplyKeyboardMarkup, Update, ReplyKeyboardRemove
 from telegram.ext import (
@@ -15,21 +14,15 @@ from telegram.ext import (
     CallbackContext,
 )
 
+import ngrok
+
+
 # Enable logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
 )
-
 logger = logging.getLogger(__name__)
 
-CNVSTATE_BLACKLISTED, CNVSTATE_WAITING_FOR_COMMAND = range(2)
-
-reply_keyboard = [
-    ['Age', 'Favourite colour'],
-    ['Number of siblings', 'Something else...'],
-    ['Done'],
-]
-markup = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True)
 
 
 
@@ -60,19 +53,21 @@ class ConfigOption:
         return '{}{} => {}'.format(self.configKey, '*' if self.mandatory else '', self.value)
 
 
+
+CNVSTATE_BLACKLISTED, CNVSTATE_WAITING_FOR_COMMAND = range(2)
+
 configMain = {
     'TOKEN': ConfigOption('BotToken', '', ConfigOptionType.str, True),
     'WHITELIST': ConfigOption('WhiteList', '', ConfigOptionType.list)
 }
-
 configHA = {
-    'EXPOSETIME': ConfigOption('DefaultExposeTime', '10', ConfigOptionType.int)
+    'COMMAND': ConfigOption('Command', '', ConfigOptionType.list),
+    'TIMEOUT': ConfigOption('DefaultTimeout', '10', ConfigOptionType.int),
+    'NGROKAPI': ConfigOption('NgrokAPIKey', '', ConfigOptionType.str)
 }
 
-def facts_to_str(user_data: Dict[str, str]) -> str:
-    """Helper function for formatting the gathered user info."""
-    facts = [f'{key} - {value}' for key, value in user_data.items()]
-    return "\n".join(facts).join(['\n', '\n'])
+
+
 
 def isInWhiteList(id : int) -> bool:
     return str(id) in configMain['WHITELIST'].value
@@ -81,6 +76,47 @@ def notInWhiteList(id : int) -> int:
     logger.info('Non-white listed try: id={}'.format(id))
     return ConversationHandler.END
 
+
+
+def exposeHomeAssistant(upd: Update, ctx: CallbackContext) -> int:
+    if not isInWhiteList(upd.effective_user.id):
+        return notInWhiteList(upd.effective_user.id)
+
+    success = ngrok.RunNgrok(configHA['COMMAND'].value, configHA['TIMEOUT'].value)
+    if not success:
+        upd.message.reply_text('Problems with exposing HA')
+        return CNVSTATE_WAITING_FOR_COMMAND
+
+    link = ngrok.GetNgrokLink(configHA['NGROKAPI'].value)
+    if not len(link):
+        successTerminate = ngrok.StopNgrok()
+        if successTerminate:
+            upd.message.reply_text('Couldn\'t get ngrok link. HA is back hidden')
+        else:
+            upd.message.reply_text('Executed ngrok, although couldn\'t get ngrok link and couldn\'t terminate ngrok back. HA is likely exposed!')
+        return CNVSTATE_WAITING_FOR_COMMAND
+
+    upd.message.reply_text('Successfully exposed HA for {} minutes. HA will be hidden at {}'.format(configHA['TIMEOUT'].value, '(calculate yourself)'))
+    upd.message.reply_text(link)
+
+    return CNVSTATE_WAITING_FOR_COMMAND
+
+def hideHomeAssistant(upd: Update, ctx: CallbackContext) -> int:
+    if not isInWhiteList(upd.effective_user.id):
+        return notInWhiteList(upd.effective_user.id)
+
+    success = ngrok.StopNgrok(configHA['NGROKAPI'].value)
+    upd.message.reply_text('Successfully hidden HA' if success else 'Problems with hiding HA')
+
+    return CNVSTATE_WAITING_FOR_COMMAND
+
+def notImplementedCmd(upd: Update, ctx: CallbackContext) -> int:
+    if not isInWhiteList(upd.effective_user.id):
+        return notInWhiteList(upd.effective_user.id)
+
+    upd.message.reply_text('Unfortunately this command is not implemented yet!')
+
+    return CNVSTATE_WAITING_FOR_COMMAND
 
 def startCmd(upd: Update, ctx: CallbackContext) -> int:
     if not isInWhiteList(upd.effective_user.id):
@@ -107,30 +143,6 @@ def helpCmd(upd: Update, ctx: CallbackContext) -> int:
 
     return CNVSTATE_WAITING_FOR_COMMAND
 
-def exposeHomeAssistant(upd: Update, ctx: CallbackContext) -> int:
-    if not isInWhiteList(upd.effective_user.id):
-        return notInWhiteList(upd.effective_user.id)
-
-    upd.message.reply_text('This command exposes HA')
-
-    return CNVSTATE_WAITING_FOR_COMMAND
-
-def hideHomeAssistant(upd: Update, ctx: CallbackContext) -> int:
-    if not isInWhiteList(upd.effective_user.id):
-        return notInWhiteList(upd.effective_user.id)
-
-    upd.message.reply_text('This command hides HA')
-
-    return CNVSTATE_WAITING_FOR_COMMAND
-
-def notImplementedCmd(upd: Update, ctx: CallbackContext) -> int:
-    if not isInWhiteList(upd.effective_user.id):
-        return notInWhiteList(upd.effective_user.id)
-
-    upd.message.reply_text('Unfortunately this command is not implemented yet!')
-
-    return CNVSTATE_WAITING_FOR_COMMAND
-
 commands = {
     'help': (helpCmd, 'Shows this help message'),
     'exposeha': (exposeHomeAssistant, 'Exposes the Home Assistant web page to the internet and sends back the access link.'
@@ -138,6 +150,8 @@ commands = {
     'hideha': (hideHomeAssistant, 'Hides the Home Assistant web page from the internet.'),
     'reloadconfig': (notImplementedCmd, 'Reloads the configuration file'),
 }
+
+
 
 def processConfig() -> bool:
     try:
@@ -162,18 +176,20 @@ def processConfig() -> bool:
 
         return True
 
-    processSection(cnf, 'Main', configMain)
-    processSection(cnf, 'HA', configHA)
-    return True
+    retMain = processSection(cnf, 'Main', configMain)
+    retHA = processSection(cnf, 'HA', configHA)
+
+    return retMain and retHA
 
 def main() -> None:
+    # Configuration file
     if not processConfig():
         logger.error('Processing config file failed. Execution stopped')
         return
 
+    # TG Bot related stuff
     updater = Updater(configMain['TOKEN'].value)
-    dispatcher = updater.dispatcher
-    conv_handler = ConversationHandler(
+    updater.dispatcher.add_handler(ConversationHandler(
         entry_points=[
             CommandHandler('start', startCmd)
         ],
@@ -186,16 +202,8 @@ def main() -> None:
         fallbacks=[
             MessageHandler(Filters.all, fallbackMsg)
         ],
-    )
-
-    dispatcher.add_handler(conv_handler)
-
-    # Start the Bot
+    ))
     updater.start_polling()
-
-    # Run the bot until you press Ctrl-C or the process receives SIGINT,
-    # SIGTERM or SIGABRT. This should be used most of the time, since
-    # start_polling() is non-blocking and will stop the bot gracefully.
     updater.idle()
 
 
