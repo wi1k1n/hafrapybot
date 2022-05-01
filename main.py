@@ -2,7 +2,6 @@
 # pylint: disable=C0116,W0613
 
 import logging, configparser
-from enum import Enum
 
 from telegram import ReplyKeyboardMarkup, Update, ReplyKeyboardRemove
 from telegram.ext import (
@@ -15,6 +14,7 @@ from telegram.ext import (
 )
 
 import ngrok
+from config_options import *
 
 
 # Enable logging
@@ -26,34 +26,6 @@ logger = logging.getLogger(__name__)
 
 
 
-
-class ConfigOptionType(Enum):
-    str, int, float, list = range(4)
-
-class ConfigOption:
-    def __init__(self, _key : str, _val : any, _type : ConfigOptionType = ConfigOptionType.str, _mandatory : bool = False):
-        self.configKey : str = _key
-        self.mandatory : bool = _mandatory
-        self.type : ConfigOptionType = _type
-        self.value = self.setValue(_val)
-
-    def setValue(self, _val : str):
-        if self.type == ConfigOptionType.str:
-            self.value = str(_val)
-        elif self.type == ConfigOptionType.int:
-            self.value = int(_val)
-        elif self.type == ConfigOptionType.float:
-            self.value = float(_val)
-        elif self.type == ConfigOptionType.list:
-            self.value = [token.strip() for token in _val.split(',')]
-        else:
-            raise Exception('Unknown type')
-
-    def __str__(self):
-        return '{}{} => {}'.format(self.configKey, '*' if self.mandatory else '', self.value)
-
-
-
 CNVSTATE_BLACKLISTED, CNVSTATE_WAITING_FOR_COMMAND = range(2)
 
 configMain = {
@@ -61,9 +33,10 @@ configMain = {
     'WHITELIST': ConfigOption('WhiteList', '', ConfigOptionType.list)
 }
 configHA = {
-    'COMMAND': ConfigOption('Command', '', ConfigOptionType.list),
+    'COMMAND': ConfigOption('CommandNgrok', '', ConfigOptionType.command),
+    'NGROKAPI': ConfigOption('NgrokAPIKey', '', ConfigOptionType.str),
     'TIMEOUT': ConfigOption('DefaultTimeout', '10', ConfigOptionType.int),
-    'NGROKAPI': ConfigOption('NgrokAPIKey', '', ConfigOptionType.str)
+    'CMDADDITIONAL': ConfigOption('CommandAdditional', '', ConfigOptionType.str),
 }
 
 
@@ -89,14 +62,19 @@ def exposeHomeAssistant(upd: Update, ctx: CallbackContext) -> int:
 
     link = ngrok.GetNgrokLink(configHA['NGROKAPI'].value)
     if not len(link):
-        successTerminate = ngrok.StopNgrok()
+        successTerminate = ngrok.StopNgrok(configHA['NGROKAPI'].value)
         if successTerminate:
             upd.message.reply_text('Couldn\'t get ngrok link. HA is back hidden')
         else:
             upd.message.reply_text('Executed ngrok, although couldn\'t get ngrok link and couldn\'t terminate ngrok back. HA is likely exposed!')
         return CNVSTATE_WAITING_FOR_COMMAND
 
-    upd.message.reply_text('Successfully exposed HA for {} minutes. HA will be hidden at {}'.format(configHA['TIMEOUT'].value, '(calculate yourself)'))
+    successAddCmd = False
+    if 'CMDADDITIONAL' in configHA:
+        successAddCmd = ngrok.RunAdditionalCommand(configHA['CMDADDITIONAL'], link)
+
+    upd.message.reply_text('Successfully exposed HA for {} minutes. HA will be hidden at {}.{}'.format(configHA['TIMEOUT'].value, '(calculate yourself)',
+                           '\nInfiny successfully updated!' if successAddCmd else ''))
     upd.message.reply_text(link)
 
     return CNVSTATE_WAITING_FOR_COMMAND

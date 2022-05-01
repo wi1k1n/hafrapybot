@@ -1,4 +1,6 @@
 import subprocess, os, signal, requests, socket, urllib.parse
+from config_options import *
+from util.os_utils import *
 
 g_Process: subprocess.Popen = None
 
@@ -39,14 +41,25 @@ def GetNgrokLink(ngrokKey: str) -> str:
         parsed_url = urllib.parse.urlparse(addr)
     except:
         return ''
-    return addr + ' (' + socket.gethostbyname(parsed_url.netloc) + ')'
+    return addr
+    # return addr + ' (' + socket.gethostbyname(parsed_url.netloc) + ')'
+
+def RunAdditionalCommand(cmd: ConfigOptionType, link: str):
+    try:
+        subprocess.run(repr(cmd).format(link), shell=True)
+    except:
+        return False
+    return True
 
 def RunNgrok(cmdList, timeout):
     global g_Process
 
     # TODO: if windows/linux
     try:
-        g_Process = subprocess.Popen(cmdList, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False, preexec_fn=os.setsid)
+        if Windows():
+            g_Process = subprocess.Popen(cmdList, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False)
+        elif Linux():
+            g_Process = subprocess.Popen(cmdList, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False, preexec_fn=os.setsid)
     except:
         return False
 
