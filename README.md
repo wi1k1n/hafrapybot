@@ -1,4 +1,4 @@
-#Home Assistant bot
+# Home Assistant bot
 
  It's yet another telegram bot implementation, this time as an integration with Home Assistant.
  At the moment only allows to expose and hide HA instance to the internet
